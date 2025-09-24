@@ -21,7 +21,7 @@ An agent program is a callable instance, taking percepts and choosing actions
 
 EnvGUI ## A window with a graphical representation of the Environment
 
-EnvToolbar ## contains buttons for controlling EnvGUI
+EnvToolbar ### contains buttons for controlling EnvGUI
 
 EnvCanvas ## Canvas to display the environment of an EnvGUI
 """

@@ -203,7 +203,7 @@ def depth_first_tree_search(problem):
     Repeats infinitely in case of loops.
     """
 
-    frontier = [Node(problem.initial)]  # Stack
+    frontier = [Node(problem.initial)]  # LIfo
 
     while frontier:
         node = frontier.pop()

@@ -1,292 +1,503 @@
 import sys
 import os
 import random
+import numpy as np
+import matplotlib.pyplot as plt
 
 parent_dir = os.path.dirname(os.getcwd())
 sys.path.append(parent_dir)
 
 from agents import *
+from agents import XYEnvironment, Agent
 
-# ============================================
-# TILE TYPES (AIMA Thing class)
-# ============================================
-class Floor(Thing):
-    """Walkable floor tile,accessible"""
-    pass
+# =====================================================================================================
+# --- Environment tile codes ---
+# I used a grid-based environment, so defining separate Thing subclasses (like Floor or Wall) was unnecessary.
+# =====================================================================================================
+FLOOR = 0
+WALL = 1
+STAIRS = 2
+OBSTACLE = 3
+GOAL = 4
 
-class Stairs(Thing):
-    """Stairs tile, inaccessible, randomly placed"""
-    pass
+# =====================================================================================================
+""" A. Environment Setup """
+# =====================================================================================================
+"""
+In this part, I created a 2D environment that represents a house floor plan. 
+The idea is that the agent moves with a white cane, trying to reach a known goal 
+while avoiding stairs or obstacles that it discovers through its sensors. 
+The world is partially observable, deterministic, and static.
+"""
+# =====================================================================================================
 
-class Wall(Thing):
-    """Wall tile,  inaccessible"""
-    pass
+class NavigationEnvironment(XYEnvironment):
+    """2D house-like grid world for the navigation task."""
 
-class Obstacle(Thing):
-    """Obstacle (furniture or other room objects), inaccessible, randomly placed"""
-    pass
-
-class Goal(Thing):
-    """Goal tile"""
-    pass
-
-
-# ============================================
-# ENVIRONMENT
-# Source: Extended from AIMA agents.py XYEnvironment class
-# ============================================
-class VisuallyImpairedEnvironment(XYEnvironment):
-    """
-    Grid-based environment for visually impaired navigation.
-    Extends AIMA XYEnvironment for 2D grid representation.
-    
-    Reference: Russell & Norvig AIMA - agents.py
-    Custom implementation: Tile placement logic
-    """
-    
-    def __init__(self, width=5, height=5):
-        # AIMA XYEnvironment initialization
+    def __init__(self, width=10, height=10, obstacle_prob=0.1):
         super().__init__(width, height)
+        self.obstacle_prob = obstacle_prob
         self.width = width
         self.height = height
-        self.goal_location = (width-1, height-1)
+        self.grid = np.zeros((height, width), dtype=int)
+        self.goal_location = None
         self.setup_environment()
-    
+
     def setup_environment(self):
-        """
-        Place tiles in environment.
-        Custom implementation for domain-specific tile placement.
-        Uses AIMA add_thing() method from Environment class.
-        """
-        # Goal placement
-        self.add_thing(Goal(), self.goal_location)  # AIMA method
-        
-        # Stairs placement (custom logic)
-        num_stairs = max(1, self.width // 3)
-        for _ in range(num_stairs):
-            x = random.randint(1, self.width-2)  # Python random
-            y = random.randint(1, self.height-2)
-            if (x, y) != self.goal_location and (x, y) != (0, 0):
-                self.add_thing(Stairs(), (x, y))  # AIMA method
-        
-        # Wall boundaries (custom logic)
-        for x in range(self.width):
-            self.add_thing(Wall(), (x, 0))  # AIMA method
-            self.add_thing(Wall(), (x, self.height-1))
-        for y in range(self.height):
-            self.add_thing(Wall(), (0, y))
-            self.add_thing(Wall(), (self.width-1, y))
-        
-        # Obstacle placement (custom logic)
-        num_obstacles = max(1, self.width // 4)
-        for _ in range(num_obstacles):
-            x = random.randint(1, self.width-2)
-            y = random.randint(1, self.height-2)
-            if (x, y) != self.goal_location and (x, y) != (0, 0):
-                self.add_thing(Obstacle(), (x, y))  # AIMA method
+        """Set walls, obstacles, stairs and goal."""
+        # walls around borders
+        self.grid[0, :] = WALL
+        self.grid[-1, :] = WALL
+        self.grid[:, 0] = WALL
+        self.grid[:, -1] = WALL
+
+        # some inner walls to form rooms
+        self.grid[5, 2:8] = WALL
+        self.grid[2:5, 5] = WALL
+
+        # stairs as dangerous zones
+        self.grid[7:9, 7:9] = STAIRS
+
+        # random furniture as obstacles
+        for x in range(1, self.width - 1):
+            for y in range(1, self.height - 1):
+                if self.grid[y, x] == FLOOR and random.random() < self.obstacle_prob:
+                    self.grid[y, x] = OBSTACLE
+
+        # set known goal location (agent knows it)
+        self.goal_location = (8, 2)
+        gx, gy = self.goal_location
+        self.grid[gy, gx] = GOAL
+
     def percept(self, agent):
         """
-        Return agent's perception of environment.
-        
-        Source: AIMA agents.py Environment.percept() pattern
-        Custom implementation: White cane sensing (4 adjacent cells)
-        
-        Returns:
-            tuple: (location, adjacent_tiles)
+        The agent perceives its immediate surroundings with a white cane.
+        It knows its own position and the goal, but not all obstacles in advance.
         """
-        location = agent.location
-        adjacent = self.get_adjacent_tiles(location)
-        return (location, adjacent)
-    
-    def get_adjacent_tiles(self, location):
-        """
-        Get tile types in 4 adjacent cells (white cane sweep).
-        Custom implementation for tactile sensing.
-        
-        Returns:
-            dict: {'Up': tile_type, 'Down': tile_type, ...}
-        """
-        x, y = location
-        adjacent = {}
-        
-        directions = {
-            'Up': (x, y-1),
-            'Down': (x, y+1),
-            'Left': (x-1, y),
-            'Right': (x+1, y)
-        }
-        
-        for dir_name, (nx, ny) in directions.items():
-            if 0 <= nx < self.width and 0 <= ny < self.height:
-                tile_type = self.get_tile_type((nx, ny))
-                adjacent[dir_name] = tile_type
-            else:
-                adjacent[dir_name] = 'Wall'  # Out of bounds
-        
-        return adjacent
-    
-    def get_tile_type(self, location):
-        """
-        Identify tile type at location.
-        Uses AIMA things list to check tile types.
-        
-        Returns:
-            str: 'Stairs', 'Wall', 'Obstacle', 'Goal', or 'Floor'
-        """
-        for thing in self.things:
-            if thing.location == location:
-                if isinstance(thing, Stairs):
-                    return 'Stairs'
-                elif isinstance(thing, Wall):
-                    return 'Wall'
-                elif isinstance(thing, Obstacle):
-                    return 'Obstacle'
-                elif isinstance(thing, Goal):
-                    return 'Goal'
-        return 'Floor'  # Empty cell = floor
-    
-    def execute_action(self, agent, action):
-        """
-        Execute agent action with white cane safety system.
-        
-        Source: AIMA agents.py Environment.execute_action() pattern
-        Custom implementation: White cane obstacle detection + vibration
-        
-        Performance updates:
-        - Floor move: -1
-        - Obstacle detected: -10 (vibration warning, blocked)
-        - Goal reached: +1000
-        """
-        if action == 'NoOp':
-            return
-        
-        # Calculate target location
         x, y = agent.location
-        moves = {
-            'Up': (x, y-1),
-            'Down': (x, y+1),
-            'Left': (x-1, y),
-            'Right': (x+1, y)
+        return {
+            'location': (x, y),
+            'goal': self.goal_location,
+            'current': self.grid[y, x],
+            'front': self.grid[y - 1, x] if y > 0 else WALL,
+            'back': self.grid[y + 1, x] if y < self.height - 1 else WALL,
+            'left': self.grid[y, x - 1] if x > 0 else WALL,
+            'right': self.grid[y, x + 1] if x < self.width - 1 else WALL
         }
-        
-        target = moves.get(action)
-        if not target:
-            return
-        
-        # Check if target is valid
-        if not self.is_valid_location(target):
-            agent.performance -= 10  # Out of bounds warning
-            return
-        
-        # White cane detection
-        tile_type = self.get_tile_type(target)
-        
-        if tile_type in ['Stairs', 'Wall', 'Obstacle']:
-            # White cane vibration warning - movement blocked
-            agent.performance -= 10
-            return  # Don't move
-        
-        # Safe to move
-        agent.location = target
-        
-        if tile_type == 'Goal':
-            agent.performance += 1000  # Goal reached!
-        else:  # Floor
-            agent.performance -= 1  # Movement cost
-    
-    def is_valid_location(self, location):
-        """Check if location within grid bounds"""
-        x, y = location
-        return 0 <= x < self.width and 0 <= y < self.height
+
+    def execute_action(self, agent, action):
+        """Move the agent and update performance depending on what it hits."""
+        x, y = agent.location
+        nx, ny = x, y
+
+        # move based on chosen action
+        if action == 'Forward' and y > 0:
+            ny -= 1
+        elif action == 'Back' and y < self.height - 1:
+            ny += 1
+        elif action == 'Left' and x > 0:
+            nx -= 1
+        elif action == 'Right' and x < self.width - 1:
+            nx += 1
+
+        tile = self.grid[ny, nx]
+        agent.performance -= 1  # small step cost
+
+        if tile in (FLOOR, GOAL):
+            agent.location = (nx, ny)
+            if tile == GOAL:
+                agent.performance += 1000  # reaching goal reward
+        elif tile == OBSTACLE:
+            agent.performance -= 10  # bump into furniture
+        elif tile == STAIRS:
+            agent.performance -= 100  # big penalty for danger
+
+    def is_done(self):
+        """Episode ends when the goal is reached."""
+        for ag in self.agents:
+            if ag.location == self.goal_location:
+                return True
+        return False
 
 
-# ============================================
-# AGENT 1: SIMPLE REFLEX
-# Source: AIMA agents.py Agent class pattern
-# Custom implementation: Rule-based decision making
-# ============================================
+# =====================================================================================================
+""" B. Agent Types """
+# =====================================================================================================
+"""
+I built three types of agents for this navigation problem:
+1. Simple Reflex Agent: reacts immediately based on current percept.
+2. Model-Based Agent: keeps a small memory of visited tiles.
+3. Plain Goal-Based Agent: knows the goal and stops when it’s reached.
+"""   
+
+# =====================================================================================================
+# --- 1. Simple Reflex Agent ---
+# =====================================================================================================
 class SimpleReflexNavigationAgent(Agent):
-    """
-    Simple reflex agent using condition-action rules.
-    No memory, purely reactive.
-    
-    Reference: AIMA Chapter 2 - Simple Reflex Agent
-    """
-    
+    """Moves toward goal if the path looks safe, otherwise picks any safe direction."""
     def __init__(self):
         super().__init__()
-        self.program = self.simple_reflex_program
-    
-    def simple_reflex_program(self, percept):
-        """
-        Rule-based decision making.
-        Custom implementation: White cane-based navigation rules.
-        
-        Rules:
-        1. If goal adjacent → move to goal
-        2. If obstacle detected → avoid
-        3. Else → choose random safe direction
-        """
-        location, adjacent = percept
-        
-        # Rule 1: Goal visible?
-        for direction, tile in adjacent.items():
-            if tile == 'Goal':
-                return direction
-        
-        # Rule 2: Find safe directions (avoid obstacles)
-        safe_directions = []
-        for direction, tile in adjacent.items():
-            if tile == 'Floor':
-                safe_directions.append(direction)
-        
-        # Rule 3: Move to safe direction
-        if safe_directions:
-            return random.choice(safe_directions)  # Python random
-        
-        return 'NoOp'  # Stuck
 
-# ============================================
+    def program(self, percept):
+        loc = percept['location']
+        goal = percept['goal']
+        x, y = loc
+        gx, gy = goal
+
+        if percept['current'] == GOAL or loc == goal:
+            return 'NoOp'  # goal reached
+
+        dx, dy = gx - x, gy - y
+        # move greedily toward goal
+        if dx > 0 and percept['right'] in (FLOOR, GOAL): return 'Right'
+        if dx < 0 and percept['left'] in (FLOOR, GOAL): return 'Left'
+        if dy > 0 and percept['back'] in (FLOOR, GOAL): return 'Back'
+        if dy < 0 and percept['front'] in (FLOOR, GOAL): return 'Forward'
+
+        # fallback safe movement
+        for move, tile in (('Forward', percept['front']),
+                           ('Right', percept['right']),
+                           ('Left', percept['left']),
+                           ('Back', percept['back'])):
+            if tile == FLOOR:
+                return move
+        return 'NoOp'
+
+
+# =====================================================================================================
+# --- 2. Model-Based Agent ---
+# =====================================================================================================
+    
+class ModelBasedNavigationAgent(Agent):
+    """Tracks visited tiles and avoids revisiting the same places if possible."""
+    def __init__(self, width=10, height=10):
+        super().__init__()
+        self.mental_map = {}
+        self.visited = set()
+        self.width = width
+        self.height = height
+
+    def program(self, percept):
+        loc = percept['location']
+        goal = percept['goal']
+        x, y = loc
+
+        # update internal map
+        self.visited.add(loc)
+        self.mental_map[(x, y)] = percept['current']
+
+        if y > 0: self.mental_map[(x, y - 1)] = percept['front']
+        if y < self.height - 1: self.mental_map[(x, y + 1)] = percept['back']
+        if x > 0: self.mental_map[(x - 1, y)] = percept['left']
+        if x < self.width - 1: self.mental_map[(x + 1, y)] = percept['right']
+
+        if loc == goal:
+            return 'NoOp'
+
+        # prefer unvisited safe moves closer to goal
+        dx, dy = goal[0] - x, goal[1] - y
+        options = []
+        for name, (dx_, dy_), tile in [
+            ('Right', (1, 0), percept['right']),
+            ('Left', (-1, 0), percept['left']),
+            ('Back', (0, 1), percept['back']),
+            ('Forward', (0, -1), percept['front'])
+        ]:
+            nx, ny = x + dx_, y + dy_
+            if tile in (FLOOR, GOAL):
+                visited = (nx, ny) in self.visited
+                dist = abs(goal[0] - nx) + abs(goal[1] - ny)
+                options.append(((visited, dist), name))
+
+        if options:
+            options.sort()
+            return options[0][1]
+
+        # last resort
+        for move, tile in (('Forward', percept['front']),
+                           ('Right', percept['right']),
+                           ('Left', percept['left']),
+                           ('Back', percept['back'])):
+            if tile == FLOOR:
+                return move
+        return 'NoOp'
+
+
+# =====================================================================================================
+""" B. Goal-Based Navigation Agent """
+# =====================================================================================================
+"""
+In this section, I extended the model-based agent into a goal-based navigation agent. 
+The agent’s objective is to reach a goal location safely, using the white cane for sensing.
+
+Main idea:
+- Define a Goal: The agent aims to reach the goal tile without hitting obstacles or stairs.
+- World Model: It builds an internal map (mental model) of what it has sensed so far.
+- Percept History: Keeps track of visited tiles and updates the map as it moves.
+- Rule-Driven Planning: Uses simple rules to choose the next move toward the goal.
+
+Greedy-like Behavior:
+This version does not yet use real search algorithms (like BFS or Greedy Best-First Search). 
+However, the agent behaves *greedy-like* — it always tries to move closer to the goal using 
+rule-based logic, selecting safe directions that reduce distance. 
+If blocked, it replans or explores new paths.
+
+This makes the agent a plain goal-based type — it has a goal, memory, and partial planning, 
+but no formal search mechanism yet. In the next stage, this rule-driven logic will be replaced 
+with true search-based planning.
+"""
+# =====================================================================================================
+
+
+class GoalBasedNavigationAgent(Agent):
+    """Goal-based navigation agent using simple greedy-like movement rules."""
+    
+    def __init__(self, width=10, height=10):
+        super().__init__()
+        self.program = self.program  # Bind the agent's own program logic
+        self.width = width
+        self.height = height
+        self.mental_map = {}
+        self.visited = set()
+        self.path_plan = []
+        self.stuck_counter = 0
+
+    def program(self, percept):
+        """Main decision-making for the goal-based agent."""
+        location = percept['location']
+        goal = percept['goal']
+        
+        # Update the internal map with white cane data
+        x, y = location
+        self.visited.add(location)
+        surroundings = {
+            (x, y-1): percept['front'],
+            (x, y+1): percept['back'],
+            (x-1, y): percept['left'],
+            (x+1, y): percept['right']
+        }
+        for pos, tile in surroundings.items():
+            if 0 <= pos[0] < self.width and 0 <= pos[1] < self.height:
+                self.mental_map[pos] = tile
+
+        # Stop if goal reached
+        if location == goal:
+            print(f"GOAL REACHED! Final location: {location}")
+            return 'NoOp'
+        
+        # Simple path plan - rule-based greedy-like move toward goal
+        if not self.path_plan or self.stuck_counter > 3:
+            self.path_plan = self.plan_toward_goal(location, goal)
+            self.stuck_counter = 0
+        
+        # Execute next step from plan
+        if self.path_plan:
+            next_step = self.path_plan[0]
+            dx = next_step[0] - x
+            dy = next_step[1] - y
+
+            # Check if next step still safe
+            if self.mental_map.get(next_step, 0) in [0, 4]:  # floor or goal
+                self.path_plan.pop(0)
+                if dx == 1:
+                    return 'Right'
+                elif dx == -1:
+                    return 'Left'
+                elif dy == 1:
+                    return 'Back'
+                elif dy == -1:
+                    return 'Forward'
+            else:
+                # Replan if blocked
+                self.path_plan = []
+                self.stuck_counter += 1
+
+        # Explore when no clear plan
+        return self.explore(percept)
+    
+    def plan_toward_goal(self, start, goal):
+        """Simplified greedy-like rule-based path planner."""
+        from collections import deque
+        queue = deque([(start, [])])
+        visited = {start}
+
+        while queue:
+            current, path = queue.popleft()
+            if current == goal:
+                return path
+            
+            # Check all directions (Forward, Back, Left, Right)
+            for dx, dy in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
+                next_pos = (current[0] + dx, current[1] + dy)
+                if (0 <= next_pos[0] < self.width and 
+                    0 <= next_pos[1] < self.height and 
+                    next_pos not in visited):
+                    
+                    tile = self.mental_map.get(next_pos, 0)  # default floor
+                    if tile in [0, 4]:  # floor or goal
+                        visited.add(next_pos)
+                        queue.append((next_pos, path + [next_pos]))
+        return []  # if no path found
+
+    def explore(self, percept):
+        """Explore nearby safe and unvisited tiles."""
+        x, y = percept['location']
+        options = []
+
+        # Prefer unvisited directions first
+        if percept['front'] == 0 and (x, y-1) not in self.visited:
+            options.append('Forward')
+        if percept['right'] == 0 and (x+1, y) not in self.visited:
+            options.append('Right')
+        if percept['left'] == 0 and (x-1, y) not in self.visited:
+            options.append('Left')
+        if percept['back'] == 0 and (x, y+1) not in self.visited:
+            options.append('Back')
+
+        # Choose randomly if no clear unexplored option
+        if options:
+            return random.choice(options)
+        
+        # Otherwise, move randomly but safely
+        safe_moves = []
+        if percept['front'] == 0:
+            safe_moves.append('Forward')
+        if percept['right'] == 0:
+            safe_moves.append('Right')
+        if percept['left'] == 0:
+            safe_moves.append('Left')
+        if percept['back'] == 0:
+            safe_moves.append('Back')
+        
+        return random.choice(safe_moves) if safe_moves else 'NoOp'
+    
+
+# =====================================================================================================
+""" D. Agent Comparison """
+# =====================================================================================================
+"""
+Now I wanted to see how each agent performs in the same environment.
+The metrics are simple: average performance score, number of steps, and success rate.
+This helps visualize how memory and goal-awareness affect efficiency.
+"""
+# =====================================================================================================
+
+def env_factory():
+    return NavigationEnvironment(width=10, height=10, obstacle_prob=0.1)
+
+def compare_agents(agent_factories, n=10, steps=120):
+    """Run each agent type multiple times and record average results."""
+    results = []
+    for make_agent in agent_factories:
+        total_perf = total_steps = successes = 0
+        for _ in range(n):
+            env = env_factory()
+            agent = make_agent()
+            agent.location = (1, 1)
+            agent.performance = 0
+            env.add_thing(agent, agent.location)
+
+            step = 0
+            while not env.is_done() and step < steps:
+                p = env.percept(agent)
+                a = agent.program(p)
+                env.execute_action(agent, a)
+                step += 1
+
+            total_perf += agent.performance
+            total_steps += step
+            if env.is_done():
+                successes += 1
+
+        results.append((make_agent().__class__.__name__,
+                        total_perf / n, total_steps / n,
+                        100 * successes / n))
+    return results
+
+
+def visualize(results):
+    """Simple bar plot to compare average performance and success."""
+    names = [r[0] for r in results]
+    perf = [r[1] for r in results]
+    succ = [r[3] for r in results]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    ax1.bar(names, perf)
+    ax1.set_title("Average Performance")
+    ax2.bar(names, succ)
+    ax2.set_title("Success Rate (%)")
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+# =====================================================================================================
+""" E. Main Test """
+# =====================================================================================================
+"""
+At the end, I tested all three agents in the same setup.
+This final run shows their relative strengths and weaknesses.
+"""
+# =====================================================================================================
+def run_all():
+    agent_factories = [
+        lambda: SimpleReflexNavigationAgent(),
+        lambda: ModelBasedNavigationAgent(),
+        lambda: GoalBasedNavigationAgent()
+    ]
+
+    print("\n=== Running Navigation Agent Comparison ===")
+    print("Each agent runs 10 trials for up to 120 steps.\n")
+    results = compare_agents(agent_factories, n=10, steps=120)
+
+    print(f"{'Agent Type':<30} | {'Avg Perf':>9} | {'Avg Steps':>9} | {'Success %':>9}")
+    print("-" * 70)
+    for name, avg_perf, avg_steps, success in results:
+        print(f"{name:<30} | {avg_perf:>9.2f} | {avg_steps:>9.2f} | {success:>9.1f}")
+
+    visualize(results)
+
+
+
+
+
+# =====================================================================================================
 # PART 1.1: BUILDING YOUR WORLD
-# ============================================
-def question_1_1():
+# =====================================================================================================
+def run_1_1():
     """
-    Part 1.1: Agent-based world implementation
+    Runs all main tests and demonstrations for Part 1.1.
+    Includes: environment setup, agent initialization, and goal-based navigation test.
     """
-    print("=== PART 1.1: Agent-Based World ===")
-    # Buraya kod gelecek
-    
-    # Create environment
-    env = VisuallyImpairedEnvironment(width=5, height=5)
-    print(f"✓ Environment: {env.width}x{env.height}")
-    print(f"✓ Goal: {env.goal_location}\n")
-    
-    # Create Simple Reflex Agent
-    agent = SimpleReflexNavigationAgent()
-    agent.location = (1, 1)
-    agent.performance = 0
-    env.add_thing(agent, agent.location)
-    
-    print("--- Simple Reflex Agent Test ---")
-    print(f"Start: {agent.location}, Performance: {agent.performance}")
-    
-    # Run 10 steps
-    for step in range(10):
+    print("Running environment and agent tests...\n")
+
+    # Run the visually impaired navigation environment simulation
+    env = NavigationEnvironment(width=10, height=10)
+    agent = GoalBasedNavigationAgent(width=10, height=10)
+    env.add_thing(agent, (0, 0))  # Starting position
+
+    # Simulate until goal reached or agent stops
+    step_count = 0
+    while not env.is_done() and step_count < 200:
         percept = env.percept(agent)
         action = agent.program(percept)
-        env.execute_action(agent, action)
-        
-        print(f"Step {step+1}: {action} → Location: {agent.location}, Performance: {agent.performance}")
-        
-        if percept[1].get(action) == 'Goal':
-            print("✓ GOAL REACHED!")
+        if action == 'NoOp':
             break
+        env.execute_action(agent, action)
+        step_count += 1
 
-    pass
+    print(f"Simulation finished after {step_count} steps.\n")
 
-# ============================================
+
+def question_1_1():
+    """Part 1.1: Agent-based world implementation"""
+    print("=== PART 1.1: Agent-Based World ===\n")
+    run_1_1()  # runs Part 1.1 world simulation
+
+# =====================================================================================================
 # PART 1.2: SEARCHING YOUR WORLD
-# ============================================
+# =====================================================================================================
 def question_1_2():
     """
     Part 1.2: Search techniques implementation
@@ -295,9 +506,9 @@ def question_1_2():
     # Buraya kod gelecek
     pass
 
-# ============================================
+# =====================================================================================================
 # MAIN EXECUTION
-# ============================================
+# =====================================================================================================
 if __name__ == '__main__':
     question_1_1()
     question_1_2()

@@ -3,18 +3,18 @@ import os
 import random
 import numpy as np
 import matplotlib.pyplot as plt
-import copy
-from statistics import mean
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
+import time
+
+random.seed(42)
+np.random.seed(42)
+
 
 parent_dir = os.path.dirname(os.getcwd())
 sys.path.append(parent_dir)
 
 from agents import *
-from agents import XYEnvironment, Agent
-from search import Problem, breadth_first_graph_search, uniform_cost_search, iterative_deepening_search,depth_first_graph_search
-import time
+from search import *
+
 
 
 
@@ -481,13 +481,13 @@ def visualize(results):
     perf = [r[1] for r in results]
     succ = [r[3] for r in results]
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    '''fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
     ax1.bar(names, perf)
     ax1.set_title("Average Performance")
     ax2.bar(names, succ)
     ax2.set_title("Success Rate (%)")
     plt.tight_layout()
-    plt.show()
+    plt.show()'''
 
 
 # =====================================================================================================
@@ -619,6 +619,8 @@ def run_1_1():
     # Scalability analysis for different world sizes
     scalability_demo()
 
+# -------------------------------------------------------------------------------------------------
+
 def question_1_1():
     """Part 1.1: Agent-based world implementation"""
     print("=== PART 1.1: Agent-Based World ===\n")
@@ -653,25 +655,23 @@ class NavigationSearchProblem(Problem):
     # -------------------------------------------------------------------------------------------------
     def actions(self, state):
         """
-        Returns possible movement actions from the current location.
-        AIMA pattern: list of valid actions at given state.
+        Returns possible actions from this state.
+        We allow movement into any cell inside grid, even if it's obstacle/stairs.
+        The penalty will be handled in path_cost(), not here.
         """
-        # --- Custom logic adapted from your environment (walls, obstacles, stairs)
         x, y = state
         possible = []
         moves = {
-            'Up': (x, y - 1),
-            'Down': (x, y + 1),
-            'Left': (x - 1, y),
+            'Up':    (x, y - 1),
+            'Down':  (x, y + 1),
+            'Left':  (x - 1, y),
             'Right': (x + 1, y)
         }
 
         for act, (nx, ny) in moves.items():
             if 0 <= nx < self.width and 0 <= ny < self.height:
-                tile = self.grid[ny, nx]
-                # Only walkable or goal tiles are valid
-                if tile in (FLOOR, GOAL):
-                    possible.append(act)
+                possible.append(act)
+
         return possible
 
     # -------------------------------------------------------------------------------------------------
@@ -707,16 +707,17 @@ class NavigationSearchProblem(Problem):
         """
         x, y = state2
         tile = self.grid[y, x]
+        step_cost= 1
 
         # --- Custom penalty system integrated with AIMA’s path_cost pattern
         if tile == OBSTACLE:
-            return c + 10    # bump into furniture
+            step_cost += 10    # bump into furniture
         elif tile == STAIRS:
-            return c + 100   # dangerous zone
+            step_cost += 100   # dangerous zone
         elif tile == WALL:
-            return c + 999   # invalid (never chosen normally)
-        else:
-            return c + 1     # normal movement
+            step_cost += 999   # invalid (never chosen normally)
+        
+        return c + step_cost     
 
 
 # =====================================================================================================
@@ -751,80 +752,206 @@ Each algorithm is compared experimentally based on performance measures.
 
 def run_uninformed_searches(problem):
     """
-    Runs BFS, UCS, and IDS using AIMA’s built-in implementations.
+    Runs BFS, UCS, and IDS using AIMA’s built-in implementations,
+    and reports nodes/space via InstrumentedProblem.
     """
-
     search_algorithms = [
         ("Breadth-First Search", breadth_first_graph_search),
-        ("Uniform-Cost Search", uniform_cost_search),
+        ("Uniform-Cost Search",  uniform_cost_search),
         ("Iterative Deepening Search", iterative_deepening_search)
     ]
 
     results = []
 
     for name, algorithm in search_algorithms:
-        start_time = time.time()
-        node = algorithm(problem)
-        duration = time.time() - start_time
+        
+        inst = InstrumentedProblem(problem)
+        start_time = time.perf_counter()
+        node = algorithm(inst)
+        duration = time.perf_counter() - start_time
 
-        if node:
-            path = node.solution()
-            cost = node.path_cost
-            found = True
-        else:
-            path = []
-            cost = float('inf')
-            found = False
+        found = node is not None
+        path_len = len(node.solution()) if found else 0
+        cost = node.path_cost if found else float('inf')
+        nodes_expanded = inst.succs         
+        
+        space_complexity = inst.states # total states seen
 
         results.append({
             'algorithm': name,
             'found': found,
-            'path_length': len(path),
+            'steps': path_len - 1 ,
             'cost': cost,
-            'time': round(duration, 4)
+            'time': duration,
+            'nodes': nodes_expanded,
+            'space': space_complexity
         })
 
     return results
 
 
+
 def print_uninformed_results(results):
     """
-    Prints results of uninformed search algorithms (experimental comparison only).
+    Prints results of uninformed search algorithms (with nodes & space).
     """
     print("\n=== Uninformed Search Comparison Results ===\n")
-    print(f"{'Algorithm':<30} | {'Found':<6} | {'Path Len':<9} | {'Cost':<6} | {'Time(s)':<8}")
-    print("-" * 70)
+    print(f"{'Algorithm':<30} | {'Found':<6} | {'Steps':<10} | {'Cost':<6} | {'Time(s)':<10} | {'Nodes':<10} | {'Space':<10}")
+    print("-" * 100)
     for r in results:
         print(f"{r['algorithm']:<30} | "
               f"{'Yes' if r['found'] else 'No ':<6} | "
-              f"{r['path_length']:<9} | "
+              f"{r['steps']:<10} | "
               f"{r['cost']:<6} | "
-              f"{r['time']:<8}")
+              f"{r['time']:<10.8f} | "
+              f"{r['nodes']:<10} | "
+              f"{r['space']:<10}")
+
+# =====================================================================================================
+# INFORMED SEARCH TECHNIQUES
+# =====================================================================================================
+
+# --- Heuristic Function (for Informed Search) ---
+
+def h(node):
+    """
+    Manhattan heuristic: estimates the distance from the agent's current position
+    to the goal using grid-based distance (no diagonals).
+    """
+    (x, y) = node.state
+    (gx, gy) = current_problem.goal
+    return abs(x - gx) + abs(y - gy)
 
 
+# ---Custom A* with path pruning----
 
+def astar_pruning_search(problem, h):
+    """
+    Custom A* with path pruning:
+    - If a cheaper path to a state is found, replace the old one.
+    """
+    node = Node(problem.initial)
+    frontier = PriorityQueue('min', f=lambda n: n.path_cost + h(n))
+    frontier.append(node)
+
+    explored = {}   # state → best cost so far
+
+    while frontier:
+        node = frontier.pop()
+        if problem.goal_test(node.state):
+            return node
+
+        if node.state in explored and explored[node.state] < node.path_cost:
+            continue
+
+        explored[node.state] = node.path_cost
+
+        for action in problem.actions(node.state):
+            child = node.child_node(problem, action)
+
+            # if a cheaper path to a state is found, replace the old one
+            if (child.state not in explored) or (child.path_cost < explored[child.state]):
+                explored[child.state] = child.path_cost
+                frontier.append(child)
+
+    return None
+
+
+def run_informed_search_comparison(problem):
+    """Run Greedy Best-First, A*, and RBFS with node/space/cost tracking."""
+    print("\n=== Informed Search Comparison Results ===\n")
+
+    env = problem.env
+    global current_problem
+    current_problem = problem
+
+    algorithms = [
+        ("Greedy Best-First", lambda p: greedy_best_first_graph_search(p, h)),
+        ("A* with Pruning",  lambda p: astar_pruning_search(p, h)),
+        ("RBFS",             lambda p: recursive_best_first_search(p, h)),
+    ]
+
+    results = []
+    for name, algo in algorithms:
+        inst = InstrumentedProblem(problem)   
+        start_time = time.perf_counter()
+        solution = algo(inst)
+        elapsed = time.perf_counter() - start_time
+
+        if solution is None:
+            results.append({
+                'algorithm': name,
+                'found': False,
+                'steps': '-',
+                'cost': '-',
+                'nodes': inst.succs,
+                'space': inst.states,
+                'time': elapsed
+
+            })
+            continue
+
+        path = [node.state for node in solution.path()]
+        g_cost = solution.path_cost
+        h_cost = h(solution)         
+        f_cost = g_cost + h_cost     
+
+        results.append({
+            'algorithm': name,
+            'found': True,
+            'steps': len(path) - 1,
+            'cost': g_cost,
+            'nodes': inst.succs,
+            'space': inst.states,
+            'time': elapsed
+        })
+
+    
+    print(f"{'Algorithm':<28} | {'Found':<5} | {'Steps':<5} | {'Cost':<5} |  {'Nodes':<7} | {'Space':<7} | {'Time(s)':<10}")
+    print("-" * 110)
+    for r in results:
+        print(f"{r['algorithm']:<28} | "
+              f"{('Yes' if r['found'] else 'No'):<5} | "
+              f"{str(r['steps']):<5} | "
+              f"{str(r['cost']):<5} | "
+              f"{r['nodes']:<7} | "
+              f"{r['space']:<7} | "
+              f"{r['time']:.6f}")
+    return results
+
+
+# -------------------------------------------------------------------------------------------------
+
+        
 def question_1_2():
     """
     Part 1.2: Search techniques implementation
     """
     print("\n\n\n=== PART 1.2: SEARCHING YOUR WORLD ===\n")
-    print("--- Uninformed Search Techniques (BFS, UCS, IDS) ---\n")
+    #print("--- Uninformed Search Techniques (BFS, UCS, IDS) ---\n")
 
     # --- Create the searchable problem (choose size dynamically)
-    problem = create_search_problem(world_size=10, obstacle_prob=0.07)
+    problem = create_search_problem(world_size=10, obstacle_prob=0.1)
+
 
     # --- Run all uninformed searches
     results = run_uninformed_searches(problem)
 
     # --- Print summarized results
     print_uninformed_results(results)
+
+
+    #print("\n\n\n--- Informed Search Techniques (Greedy, A*, RBFS) ---\n")
+    # --- Create the searchable problem (if you want choose size dynamically for informed search tech.)
+    #problem = create_search_problem(world_size=10, obstacle_prob=0.2)
+    run_informed_search_comparison(problem)
+
+
 # =====================================================================================================
 # MAIN EXECUTION
 # =====================================================================================================
 
-
-
 if __name__ == '__main__':
-    #question_1_1()
+    question_1_1()
     question_1_2()
 

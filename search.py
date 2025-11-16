@@ -222,7 +222,7 @@ def depth_first_graph_search(problem):
     Does not get trapped by loops.
     If two paths reach a state, only use the first one.
     """
-    frontier = [(Node(problem.initial))]  # Stack
+    frontier = [(Node(problem.initial))]  # lifo
 
     explored = set()
     while frontier:

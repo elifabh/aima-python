@@ -1,14 +1,16 @@
 import sys
-sys.path.append('./aima-python')
+import math
+from collections import Counter
 
-from logic import FolKB, expr, fol_fc_ask, fol_bc_ask,Expr
-from probability import BayesNet, enumeration_ask
+sys.path.append('./aima-python')
 
 import numpy as np
 import pandas as pd
-from learning import NaiveBayesLearner, DataSet
-from collections import Counter
 
+from logic import FolKB, fol_fc_ask, fol_bc_ask, expr
+from probability import BayesNet, enumeration_ask
+from learning import DataSet, train_test_split, err_ratio
+from probabilistic_learning import NaiveBayesLearner
 
 # --------------------------------------------------------------------
 # ----------------------1.1	LOGICAL REASONING-------------------------
@@ -19,17 +21,6 @@ def q1_logical_reasoning_mtu():
     # ---------------------1.1.1 DEFINE THE KNOWLEDGE BASE-------------
     1. Predicates (FOL domain)
 
-        Student(s)      : s is a student
-        Lecturer(l)     : l is a lecturer
-        Module(m)       : m is a module
-        Takes(s, m)     : student s is currently taking module m
-        Passed(s, m)    : student s has already passed module m
-        Teaches(l, m)   : lecturer l teaches module m
-        Prereq(p, m)    : module p is a (direct) prerequisite for m
-        Eligible(s, m)  : s has satisfied all prerequisites for m
-        CanEnroll(s, m) : s is eligible and has not already passed m
-        TaughtBy(s, l)  : s is taught by lecturer l
-        Classmate(s, t) : students s and t share a module and s != t
         NotSame(s, t)   : s and t are different individuals  
         NotPassed(s, m) : s has not passed module m 
         IndirectPrereq(p, m): p is an (in)direct prerequisite of m
@@ -381,9 +372,243 @@ def q2_bayesian_network_ai_market():
 # --------------------------------------------------------------------
 # -----1.3 IMPLEMENTATION AND ANALYSIS OF NAIVE BAYES CLASSIFIERS-----
 # --------------------------------------------------------------------
+    
+def q3_naive_bayes():
+    """
+    Question 1.3:
+      1.3.1  Data selection & preprocessing (prior, likelihood, evidence, posterior)
+      1.3.2  Naive Bayes classification using AIMA NaiveBayesLearner.
+    """
 
+    # ---------------- 1.3.1 Raisin: priors, likelihood, evidence, posterior ----------------
+
+    print("\n" + "=" * 60)
+    print("1.3.1 DATA SELECTION & PREPROCESSING – RAISIN")
+    print("=" * 60)
+
+    df_raisin = pd.read_excel("Raisin_Dataset.xlsx")
+    if "Class" not in df_raisin.columns:
+        raise ValueError("Raisin_Dataset.xlsx must contain a 'Class' column.")
+
+    X_r = df_raisin.drop(columns=["Class"]).to_numpy()
+    y_r = df_raisin["Class"].to_numpy()
+
+    classes_r, counts_r = np.unique(y_r, return_counts=True)
+    priors_r = {c: counts_r[i] / len(y_r) for i, c in enumerate(classes_r)}
+
+    print("Class priors P(Y=c) for Raisin:")
+    for c in classes_r:
+        print(f"  P(Y={c}) ≈ {priors_r[c]:.4f}")
+
+    # Gaussian parameters per class
+    means_r = {}
+    vars_r = {}
+    for c in classes_r:
+        Xc = X_r[y_r == c]
+        mu = Xc.mean(axis=0)
+        var = Xc.var(axis=0)
+        var[var == 0] = 1e-9
+        means_r[c] = mu
+        vars_r[c] = var
+
+    # Use the first example as demonstration
+    x0_r = X_r[0]
+    y0_r = y_r[0]
+
+    def gaussian_pdf(x, mu, var):
+        coef = 1.0 / math.sqrt(2.0 * math.pi * var)
+        exponent = math.exp(- (x - mu) ** 2 / (2.0 * var))
+        return coef * exponent
+
+    num_r = {}
+    for c in classes_r:
+        mu = means_r[c]
+        var = vars_r[c]
+        log_like = 0.0
+        for j, xj in enumerate(x0_r):
+            p = gaussian_pdf(xj, mu[j], var[j])
+            log_like += math.log(p)
+        log_num = math.log(priors_r[c]) + log_like
+        num_r[c] = math.exp(log_num)
+
+    evidence_r = sum(num_r.values())
+    post_r = {c: num_r[c] / evidence_r for c in classes_r}
+
+    print(f"\nExample (Raisin) true label: {y0_r}")
+    print("\nLikelihood model (numerator = P(X|Y=c) * P(Y=c)):")
+    for c in classes_r:
+        print(f"  {c}: {num_r[c]:.3e}")
+    print(f"\nEvidence P(X) ≈ {evidence_r:.3e}")
+    print("\nPosterior P(Y|X) for this example:")
+    for c in classes_r:
+        print(f"  P(Y={c} | X) ≈ {post_r[c]:.4f}")
+
+    # ---------------- 1.3.1 Car: priors, likelihood, evidence, posterior ----------------
+
+    print("\n" + "=" * 60)
+    print("1.3.1 DATA SELECTION & PREPROCESSING – CAR EVALUATION")
+    print("=" * 60)
+
+    df_car = pd.read_csv("car.data", header=None)
+    df_car.columns = ["buying", "maint", "doors", "persons",
+                      "lug_boot", "safety", "class"]
+
+    X_c = df_car.iloc[:, :-1].to_numpy()
+    y_c = df_car["class"].to_numpy()
+
+    classes_c, counts_c = np.unique(y_c, return_counts=True)
+    priors_c = {c: counts_c[i] / len(y_c) for i, c in enumerate(classes_c)}
+
+    print("Class priors P(Y=c) for Car:")
+    for c in classes_c:
+        print(f"  P(Y={c}) ≈ {priors_c[c]:.4f}")
+
+    # Categorical NB parameters
+    n_features_c = X_c.shape[1]
+    value_counts = {c: [Counter() for _ in range(n_features_c)] for c in classes_c}
+    all_values_per_feature = [set() for _ in range(n_features_c)]
+
+    for xi, ci in zip(X_c, y_c):
+        for j, xj in enumerate(xi):
+            value_counts[ci][j][xj] += 1
+            all_values_per_feature[j].add(xj)
+
+    alpha = 1.0
+    cond_probs_c = {c: [dict() for _ in range(n_features_c)] for c in classes_c}
+    for c in classes_c:
+        for j in range(n_features_c):
+            total = sum(value_counts[c][j].values())
+            k = len(all_values_per_feature[j])
+            for v in all_values_per_feature[j]:
+                num = value_counts[c][j][v] + alpha
+                den = total + alpha * k
+                cond_probs_c[c][j][v] = num / den
+
+    x0_c = X_c[0]
+    y0_c = y_c[0]
+
+    num_c = {}
+    for c in classes_c:
+        log_like = 0.0
+        for j, xj in enumerate(x0_c):
+            p = cond_probs_c[c][j].get(xj, 1e-8)
+            log_like += math.log(p)
+        log_num = math.log(priors_c[c]) + log_like
+        num_c[c] = math.exp(log_num)
+
+    evidence_c = sum(num_c.values())
+    post_c = {c: num_c[c] / evidence_c for c in classes_c}
+
+    print(f"\nExample (Car) true label: {y0_c}")
+    print("\nLikelihood model (numerator = P(X|Y=c) * P(Y=c)):")
+    for c in classes_c:
+        print(f"  {c}: {num_c[c]:.3e}")
+    print(f"\nEvidence P(X) ≈ {evidence_c:.3e}")
+    print("\nPosterior P(Y|X) for this example:")
+    for c in classes_c:
+        print(f"  P(Y={c} | X) ≈ {post_c[c]:.4f}")
+
+    # ---------------- 1.3.2 Naive Bayes classification with AIMA ----------------
+
+    # Raisin dataset as AIMA DataSet
+    raisin_attr_names = df_raisin.columns.tolist()
+    raisin_examples = df_raisin.values.tolist()
+
+    raisin_ds = DataSet(
+        examples=raisin_examples,
+        attr_names=raisin_attr_names,
+        target='Class',
+        name='raisin'
+    )
+
+    raisin_train_ex, raisin_test_ex = train_test_split(raisin_ds, test_split=0.3)
+
+    raisin_train = DataSet(
+        examples=raisin_train_ex,
+        attr_names=raisin_attr_names,
+        target='Class',
+        name='raisin_train'
+    )
+    raisin_test = DataSet(
+        examples=raisin_test_ex,
+        attr_names=raisin_attr_names,
+        target='Class',
+        name='raisin_test'
+    )
+
+    nb_raisin = NaiveBayesLearner(raisin_train)
+    raisin_err = err_ratio(nb_raisin, raisin_test)
+    raisin_acc = 1.0 - raisin_err
+
+    print("\n" + "=" * 60)
+    print("1.3.2 NAIVE BAYES CLASSIFICATION – RAISIN (AIMA)")
+    print("=" * 60)
+    print(f"Test error ratio: {raisin_err:.3f}")
+    print(f"Test accuracy   : {raisin_acc:.3f}")
+
+    true_r = [ex[raisin_test.target] for ex in raisin_test.examples]
+    pred_r = [nb_raisin(raisin_test.sanitize(ex)) for ex in raisin_test.examples]
+
+    print("\nConfusion table (Raisin, test set):")
+    print(pd.crosstab(
+        pd.Series(true_r, name="True"),
+        pd.Series(pred_r, name="Pred")
+    ))
+
+    # Car dataset as AIMA DataSet
+    car_attr_names = df_car.columns.tolist()
+    car_examples = df_car.values.tolist()
+
+    car_ds = DataSet(
+        examples=car_examples,
+        attr_names=car_attr_names,
+        target='class',
+        name='car'
+    )
+
+    car_train_ex, car_test_ex = train_test_split(car_ds, test_split=0.3)
+
+    car_train = DataSet(
+        examples=car_train_ex,
+        attr_names=car_attr_names,
+        target='class',
+        name='car_train'
+    )
+    car_test = DataSet(
+        examples=car_test_ex,
+        attr_names=car_attr_names,
+        target='class',
+        name='car_test'
+    )
+
+    nb_car = NaiveBayesLearner(car_train)
+    car_err = err_ratio(nb_car, car_test)
+    car_acc = 1.0 - car_err
+
+    print("\n" + "=" * 60)
+    print("1.3.2 NAIVE BAYES CLASSIFICATION – CAR (AIMA)")
+    print("=" * 60)
+    print(f"Test error ratio: {car_err:.3f}")
+    print(f"Test accuracy   : {car_acc:.3f}")
+
+    true_c = [ex[car_test.target] for ex in car_test.examples]
+    pred_c = [nb_car(car_test.sanitize(ex)) for ex in car_test.examples]
+
+    print("\nConfusion table (Car, test set):")
+    print(pd.crosstab(
+        pd.Series(true_c, name="True"),
+        pd.Series(pred_c, name="Pred")
+    ))
+
+    print("\n✓ Naive Bayes (1.3.1 + 1.3.2) completed.")
+
+
+# --------------------------------------------------------------------
+# ---------------------------------MAIN------------------------------
+# --------------------------------------------------------------------
 
 if __name__ == "__main__":
     #q1_logical_reasoning_mtu()
-    q2_bayesian_network_ai_market()
+    #q2_bayesian_network_ai_market()
+    q3_naive_bayes()
 
